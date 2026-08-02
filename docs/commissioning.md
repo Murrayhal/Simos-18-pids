@@ -1,13 +1,98 @@
 # Commissioning
 
 A freshly flashed controller does nothing. That is deliberate: it does not know
-which way your solenoid works, and a controller that guesses will confidently
-hold the flap in the wrong position. The LED blinks amber and every override is
-refused until you have worked through this page.
+what commands your actuator expects, and a controller that guesses will
+confidently drive the flap somewhere you did not ask for. The LED blinks amber
+and every override is refused until you have worked through this page.
 
 Connect a laptop with `pio device monitor` (115200 baud) for all of it.
 
-## Step 1 — check the bus before you touch anything else
+## Step 1 — learn the actuator's commands
+
+**This is the step everything else depends on.** You are capturing the two PWM
+commands the ECU already sends for open and closed, so the controller replays
+real numbers rather than invented ones.
+
+Ignition on, engine can be off. First check there is anything to read:
+
+```
+> probe
+200 Hz, duty 15.3 %, 4182 edges, steady
+```
+
+If it says `no edges on the signal line at all`, the sense input is on the wrong
+wire or the ECU is asleep. Back-probe the actuator connector: of the three pins,
+one sits at ~12 V, one at ground, and one carries the square wave. That last one
+is the signal.
+
+If it says the line is `parked high or low`, the ECU is not commanding anything
+right now. Cycle the ignition or switch drive modes and re-read.
+
+Now capture each end position. Put the car in the drive mode that **closes** the
+flap — Comfort or Efficiency — let it settle, and:
+
+```
+> learn closed
+learned closed = 15.3 % at 200 Hz
+still need the open position.
+```
+
+Switch to Dynamic, which **opens** it, let it settle, and:
+
+```
+> learn open
+learned open = 80.1 % at 200 Hz
+both positions known, overrides enabled. `save` to keep them.
+> save
+```
+
+`learn` refuses a signal that is still moving, so if the flap is mid-travel it
+will tell you to wait rather than capture a meaningless intermediate value. It
+also catches the case where both captures come out identical, which means one
+of them was taken in the wrong drive mode.
+
+If your car does not visibly change drive modes, or you cannot tell which
+position is which, verify by ear: get the flap into each state and listen at the
+tailpipe before you decide which capture is which. Getting them swapped inverts
+OPEN and QUIET, which is obvious on the first drive and fixed by re-running the
+two `learn` commands.
+
+### Sweeping by hand
+
+If you would rather find the end positions yourself — or your car only ever
+uses part of the range — drive the actuator directly with the engine off:
+
+```
+> set actuator.pwmhz 200
+> test duty 20 10
+> test duty 50 10
+> test duty 80 10
+```
+
+Each command energises the intercept relay and drives that duty for ten
+seconds. Watch the flap. When you have found the two positions you want:
+
+```
+> set actuator.closedduty 15
+> set actuator.openduty 80
+> save
+```
+
+`test stock` clears an active test early. It is refused with the engine running,
+because fighting the ECU on a shared line tells you nothing.
+
+### Check the ECU is still happy
+
+While you are here, settle the question in
+[hardware.md](hardware.md#the-open-question-what-the-ecu-side-needs): `probe`
+with the actuator connected, then unplug the actuator and `probe` again. If the
+numbers are identical, nothing is coming back from the actuator. If they differ,
+the actuator is talking on that wire and your ECU-side load has to do more than
+be a resistor.
+
+## Step 2 — check the bus
+
+Skip this for a no-CAN build.
 
 ```
 > can
@@ -23,58 +108,6 @@ and `sniff` prints nothing:
 - the 3.3 V wiring problem in [hardware.md](hardware.md)
 
 `sniff off` when you are done.
-
-## Step 2 — find out which way the solenoid works
-
-**This is the step that everything else depends on.** You are determining
-whether energising the solenoid opens the flap or closes it.
-
-There is a real reason not to take this from a forum post: the answer depends on
-whether the solenoid valve passes or blocks vacuum when energised, *and* on
-whether vacuum pulls the flap open or closed on your actuator. Two independent
-inversions. Measure it on your car.
-
-Engine off, ignition on. Have someone look at (or put a hand on) the flap
-actuator arm on the rear silencer while you run:
-
-```
-> test energize 10
-```
-
-The relay clicks, the solenoid is energised for ten seconds, and the actuator
-arm should move. Then:
-
-```
-> test deenergize 10
-```
-
-The arm should return. Watch which state corresponds to the flap being **open**
-(the actuator rod extended or retracted — follow the linkage, do not guess).
-
-If nothing moves at all:
-
-- no vacuum stored — run the engine for a minute first, then switch off and
-  retry immediately, or the reservoir may be empty
-- the intercept relay is not actually switching — listen for the click, check
-  `RELAY_ACTIVE_LOW`
-- MOSFET not turning on — check it is a logic-level part
-
-Now tell the controller what you found:
-
-```
-> set polarity closes      # energising the solenoid CLOSES the flap (quiet)
-```
-or
-```
-> set polarity opens       # energising the solenoid OPENS the flap (loud)
-```
-
-That command is also what marks the controller commissioned, so the amber LED
-stops and overrides become possible.
-
-```
-> save
-```
 
 ## Step 3 — teach it the CAN signals
 
@@ -105,10 +138,13 @@ Then, somewhere you will not annoy anyone:
 
 After a drive, scan the engine ECU with VCDS, OBDeleven or equivalent.
 
-You are specifically looking for exhaust flap valve (N321) codes — open circuit,
-short to plus, short to ground. If one appears, the dummy load is not
-convincing the ECU's driver diagnostic. Measure the solenoid coil resistance and
-match the resistor more closely.
+You are looking for exhaust flap actuator codes. If one appears, the ECU-side
+load is not convincing the diagnostic while we are intercepting — see the open
+question in [hardware.md](hardware.md#the-open-question-what-the-ecu-side-needs).
+
+A useful discriminator: does the code appear only after a drive in which you
+used OPEN or QUIET, and never after a drive spent entirely in AUTO? That points
+squarely at the intercept rather than at anything else you changed.
 
 Clear any codes, drive again, and re-scan. Do this before you decide the install
 is finished — a stored DTC will show up on the next service or NCT emissions
@@ -122,6 +158,9 @@ readiness check and will be much less obvious then.
 - **Anything you splice, you should be able to unsplice.** Use proper crimps and
   leave enough slack that the factory wire can be rejoined.
 - **The controller cannot make the flap do anything the actuator cannot.** If
-  your vacuum reservoir leaks, or the actuator diaphragm has failed, fix that
-  first — this will not paper over it, it will just be a controller wired to a
-  broken actuator.
+  the servo is seized or the flap spindle is coked up, fix that first — this
+  will not paper over it, it will just be a controller wired to a broken
+  actuator.
+- **There are two actuators**, one per tailpipe, on cars fitted with both. They
+  are usually driven from the same ECU output; if yours are on separate wires
+  you need to intercept both, wired in parallel off the one PWM output.

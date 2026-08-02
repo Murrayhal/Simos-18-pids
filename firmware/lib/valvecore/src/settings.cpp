@@ -5,9 +5,14 @@ namespace valve {
 void loadDefaults(Settings &s) {
   s.version = kSettingsVersion;
 
-  // No assumptions about the car's wiring until somebody has measured it.
-  s.energizedClosesValve = true;
-  s.polarityConfirmed = false;
+  // No assumptions about the car's actuator until somebody has measured it.
+  // Zero duties are deliberately unusable, not a guess at a sane value.
+  s.actuator.pwmHz = 0;
+  s.actuator.openDutyTenths = 0;
+  s.actuator.closedDutyTenths = 0;
+  s.actuator.openLearned = false;
+  s.actuator.closedLearned = false;
+  s.actuator.commissioned = false;
 
   s.canFitted = true;
   s.defaultMode = Mode::Auto;

@@ -22,7 +22,7 @@ and stops generating events. Neither case can cycle modes on you.
 | Red, steady | OPEN — forced open |
 | Cyan, steady | QUIET — forced closed |
 | Mode colour, 2 Hz blink | Override refused. Run `status` for the reason. |
-| Amber, 5 Hz blink | Not commissioned. Nothing will move. See [commissioning.md](commissioning.md). |
+| Amber, 5 Hz blink | Actuator not commissioned. Nothing will move. See [commissioning.md](commissioning.md). |
 | White, 5 Hz blink | Bench test driving the outputs |
 | Three white flashes | Default mode saved |
 
@@ -34,8 +34,8 @@ the part that matters when something is wrong.
 With `can` off there is no SMART: the button cycles AUTO → OPEN → QUIET, and
 the bus interlocks are skipped. See [no-canbus.md](no-canbus.md).
 
-**AUTO** de-energises the intercept relay entirely. The ECU is wired to the
-solenoid exactly as it was from the factory. This is the power-on default until
+**AUTO** de-energises the intercept relay entirely. The ECU's signal reaches the
+actuator exactly as it did from the factory. This is the power-on default until
 you change it.
 
 **SMART** opens the flap when any of these is true, subject to the interlocks:
@@ -61,7 +61,7 @@ An override is refused, and the flap handed back to the ECU, whenever:
 
 | Lockout | Condition |
 | --- | --- |
-| `not-commissioned` | Solenoid polarity has never been confirmed |
+| `not-commissioned` | The actuator's open and closed commands are not both known |
 | `voltage` | Battery outside `safety.minmv`..`safety.maxmv` (only if battery sense is fitted) |
 | `can-lost` | No usable bus data, and `safety.requirecan` is on |
 | `engine-off` | Engine speed below `safety.runrpm`, and `safety.requireengine` is on |
@@ -82,7 +82,9 @@ show                        dump settings as pasteable commands
 set <key> <value>
 sig <name> <id> <startbit> <len> <le|be> <scale> <offset>
 sig <name> [off]            show or disable one signal
-test energize|deenergize|stock [seconds]   engine off only
+probe                       measure the ECU's PWM on the signal line
+learn open|closed           store the ECU's current command as an end position
+test duty <percent> [seconds] | test stock   engine off only
 hunt start|mark <value>|top [n]|stop
 sniff on [id]|off           dump raw frames, rate limited
 can                         bus statistics
@@ -97,9 +99,11 @@ cycle before that loses them.
 
 | Key | Range | Default | What it does |
 | --- | --- | --- | --- |
-| `polarity` | `closes` \| `opens` | — | Declares which way the solenoid works, and commissions the controller |
+| `actuator.pwmhz` | 1–20000 | 0 | Carrier frequency of the command signal. Set by `learn`, or by hand from a scope reading |
+| `actuator.openduty` | 0–100 | 0 | Duty commanding the open position. Set by `learn open` |
+| `actuator.closedduty` | 0–100 | 0 | Duty commanding the closed position. Set by `learn closed` |
+| `confirm` | on/off | off | Un-commission the actuator. Cannot be forced on before both positions are known |
 | `can` | on/off | on | A CAN tap is fitted. Off disables SMART and skips the bus interlocks — see [no-canbus.md](no-canbus.md) |
-| `confirm` | on/off | off | Manually un-commission it again |
 | `default` | mode | `auto` | Mode selected at power-on |
 | `smart.openrpm` | 0–9000 | 3200 | Open at or above this |
 | `smart.closerpm` | 0–9000 | 2600 | Close at or below this |
@@ -140,14 +144,26 @@ Example, for drone from 1900 to 2600:
 
 ## Troubleshooting
 
-**LED blinks amber.** Not commissioned. `set polarity closes|opens`.
+**LED blinks amber.** The actuator is not commissioned. Run `probe`, then
+`learn closed` and `learn open`.
 
 **LED blinks the mode colour.** An interlock is refusing the override. `status`
 names it.
 
-**Modes change but nothing happens to the exhaust.** Either the polarity is
-declared backwards — swap it and see if the modes swap over — or the relay is
-not switching. `test energize 10` with the engine off and listen for the click.
+**OPEN is quiet and QUIET is loud.** The two `learn` captures were taken in the
+wrong drive modes. Re-run them, or just swap the two numbers with
+`set actuator.openduty` / `set actuator.closedduty`.
+
+**Modes change but nothing happens to the exhaust.** Check the relay is
+switching — `test duty 50 10` with the engine off, listen for the click, and
+watch `status`. If the relay clicks and the flap still does not move, the output
+stage is not producing the level the actuator wants; check `ACTUATOR_PWM_INVERTED`
+and the pull-up rail.
+
+**The flap moves to the wrong position, not just the wrong end.** The duty the
+actuator sees is not the duty the firmware thinks it is sending. Almost always
+an inverted output stage with `ACTUATOR_PWM_INVERTED` set wrong, or a sense
+divider and an output stage that do not share a ground.
 
 **`status` shows rpm that does not match the tacho.** Wrong hunt candidate.
 Re-run the hunt and take the next result down.
@@ -156,6 +172,8 @@ Re-run the hunt and take the next result down.
 note in [hardware.md](hardware.md). Marginal logic levels typically work cold
 and fail warm.
 
-**Engine light after fitting.** Scan it. An N321 circuit code means the dummy
-load is not satisfying the ECU's driver diagnostic — measure the solenoid coil
-and match the resistor value more closely.
+**Engine light after fitting.** Scan it. An exhaust flap actuator code means the
+ECU-side load is not satisfying the diagnostic while we are intercepting — see
+[hardware.md](hardware.md#the-open-question-what-the-ecu-side-needs). If the
+code only ever appears after a drive that used OPEN or QUIET, that confirms it
+is the intercept.

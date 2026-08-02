@@ -71,11 +71,13 @@ int tokenize(char *line, char **argv, int maxArgs) {
 }  // namespace
 
 Console::Console(Settings &settings, ValveController &controller,
-                 CanDecoder &decoder, SignalHunter &hunter, Mode &mode)
+                 CanDecoder &decoder, SignalHunter &hunter, PwmMeter &meter,
+                 Mode &mode)
     : settings_(settings),
       controller_(controller),
       decoder_(decoder),
       hunter_(hunter),
+      meter_(meter),
       mode_(mode),
       write_(nullptr),
       ctx_(nullptr),
@@ -122,10 +124,10 @@ bool Console::consumeModeChanged() {
 
 void Console::greet() {
   print("\r\nS3 8V exhaust valve controller\r\n");
-  if (!settings_.polarityConfirmed) {
+  if (!settings_.actuator.commissioned) {
     print(
-        "!! solenoid polarity not commissioned - all overrides are disabled\r\n"
-        "!! see docs/commissioning.md, then: set polarity closes|opens\r\n");
+        "!! actuator not commissioned - all overrides are disabled\r\n"
+        "!! see docs/commissioning.md, then: learn closed / learn open\r\n");
   }
   if (!settings_.canFitted) {
     print("no CAN tap: SMART unavailable, bus interlocks skipped\r\n");
@@ -180,6 +182,8 @@ void Console::handleLine(const char *line, uint32_t nowMs) {
   if (!strcmp(argv[0], "show")) return cmdShow();
   if (!strcmp(argv[0], "sig")) return cmdSig(argc, argv);
   if (!strcmp(argv[0], "test")) return cmdTest(argc, argv, nowMs);
+  if (!strcmp(argv[0], "probe")) return cmdProbe();
+  if (!strcmp(argv[0], "learn")) return cmdLearn(argc, argv);
   if (!strcmp(argv[0], "hunt")) return cmdHunt(argc, argv);
   if (!strcmp(argv[0], "sniff")) return cmdSniff(argc, argv);
   if (!strcmp(argv[0], "can")) return cmdCan();
@@ -206,7 +210,9 @@ void Console::cmdHelp() {
       "set <key> <value>           see docs/operation.md for keys\r\n"
       "sig <name> <id> <startbit> <len> <le|be> <scale> <offset>\r\n"
       "sig <name> [off]            show or disable one signal\r\n"
-      "test energize|deenergize|stock [seconds]   engine off only\r\n"
+      "probe                       measure the ECU's PWM on the signal line\r\n"
+      "learn open|closed           store the ECU's current command\r\n"
+      "test duty <percent> [seconds] | test stock   engine off only\r\n"
       "hunt start|mark <value>|top [n]|stop\r\n"
       "sniff on [id]|off           dump raw frames\r\n"
       "can                         bus statistics\r\n"
@@ -225,13 +231,23 @@ void Console::cmdStatus() {
 
   printf("mode      %s%s\r\n", modeName(mode_),
          o.testActive ? "  (BENCH TEST ACTIVE)" : "");
-  printf("target    %s   relay %s   solenoid %s\r\n", targetName(o.target),
+  printf("target    %s   relay %s   command %.1f %%\r\n", targetName(o.target),
          o.interceptRelay ? "INTERCEPT" : "stock",
-         o.solenoidDrive ? "ON" : "off");
+         o.interceptRelay ? o.commandDuty / 10.0 : 0.0);
   printf("lockout   %s\r\n", lockoutName(o.lockout));
-  printf("polarity  energising %s the flap%s\r\n",
-         settings_.energizedClosesValve ? "CLOSES" : "OPENS",
-         settings_.polarityConfirmed ? "" : "  (UNCONFIRMED)");
+  printf("actuator  %u Hz, open %.1f %%, closed %.1f %%%s\r\n",
+         static_cast<unsigned>(settings_.actuator.pwmHz),
+         settings_.actuator.openDutyTenths / 10.0,
+         settings_.actuator.closedDutyTenths / 10.0,
+         settings_.actuator.commissioned ? "" : "  (NOT COMMISSIONED)");
+  if (meter_.valid()) {
+    printf("ecu line  %u Hz, %.1f %%%s\r\n",
+           static_cast<unsigned>(meter_.frequencyHz()), meter_.duty() / 10.0,
+           meter_.stable() ? "" : "  (changing)");
+  } else {
+    printf("ecu line  no PWM (%lu edges seen)\r\n",
+           static_cast<unsigned long>(meter_.edgeCount()));
+  }
 
   printf("rpm       %s", vs.rpmValid ? "" : "(stale) ");
   printf("%u\r\n", static_cast<unsigned>(vs.rpm));
@@ -269,8 +285,11 @@ void Console::cmdMode(int argc, char **argv) {
 
 void Console::cmdShow() {
   const Settings &s = settings_;
-  printf("set polarity %s\r\n", s.energizedClosesValve ? "closes" : "opens");
-  printf("set confirm %s\r\n", s.polarityConfirmed ? "on" : "off");
+  printf("set actuator.pwmhz %u\r\n", static_cast<unsigned>(s.actuator.pwmHz));
+  printf("set actuator.openduty %.1f\r\n", s.actuator.openDutyTenths / 10.0);
+  printf("set actuator.closedduty %.1f\r\n",
+         s.actuator.closedDutyTenths / 10.0);
+  printf("set confirm %s\r\n", s.actuator.commissioned ? "on" : "off");
   printf("set can %s\r\n", s.canFitted ? "on" : "off");
   printf("set default %s\r\n", modeName(s.defaultMode));
   printf("set smart.openrpm %u\r\n", static_cast<unsigned>(s.smart.openRpm));
@@ -330,25 +349,50 @@ void Console::cmdSet(int argc, char **argv) {
   long n = 0;
   bool b = false;
 
-  if (!strcmp(k, "polarity")) {
-    if (!strcmp(v, "closes")) {
-      s.energizedClosesValve = true;
-    } else if (!strcmp(v, "opens")) {
-      s.energizedClosesValve = false;
-    } else {
-      print("usage: set polarity closes|opens\r\n");
+  // The duty keys exist so a known-good configuration can be pasted back in
+  // from `show`, or entered from a scope reading. `learn` is the normal route.
+  if (!strcmp(k, "actuator.openduty") || !strcmp(k, "actuator.closedduty")) {
+    float pct = 0.0f;
+    if (!parseFloat(v, pct) || pct < 0.0f || pct > 100.0f) {
+      print("expected 0..100\r\n");
       return;
     }
-    // Declaring the polarity is the act of commissioning it.
-    s.polarityConfirmed = true;
-    printf("energising %s the flap; overrides enabled\r\n",
-           s.energizedClosesValve ? "closes" : "opens");
+    const DutyTenths duty = static_cast<DutyTenths>(pct * 10.0f + 0.5f);
+    if (!strcmp(k, "actuator.openduty")) {
+      s.actuator.openDutyTenths = duty;
+      s.actuator.openLearned = true;
+    } else {
+      s.actuator.closedDutyTenths = duty;
+      s.actuator.closedLearned = true;
+    }
+    s.actuator.commissioned = s.actuator.openLearned &&
+                              s.actuator.closedLearned &&
+                              s.actuator.pwmHz > 0 &&
+                              s.actuator.openDutyTenths !=
+                                  s.actuator.closedDutyTenths;
+    printf("%s = %.1f %%%s\r\n", k, duty / 10.0,
+           s.actuator.commissioned ? ", overrides enabled" : "");
+    return;
+  }
+  if (!strcmp(k, "actuator.pwmhz")) {
+    if (!parseLong(v, n) || n < 1 || n > 20000) {
+      print("expected 1..20000 Hz\r\n");
+      return;
+    }
+    s.actuator.pwmHz = static_cast<uint16_t>(n);
+    printf("actuator.pwmhz = %ld\r\n", n);
     return;
   }
   if (!strcmp(k, "confirm")) {
     if (!parseBool(v, b)) { print("expected on|off\r\n"); return; }
-    s.polarityConfirmed = b;
-    printf("polarity %s\r\n", b ? "confirmed" : "unconfirmed");
+    if (b && !(s.actuator.openLearned && s.actuator.closedLearned &&
+               s.actuator.pwmHz > 0)) {
+      print("refused: both end positions and a carrier frequency are needed "
+            "first. Run `learn open` and `learn closed`.\r\n");
+      return;
+    }
+    s.actuator.commissioned = b;
+    printf("actuator %s\r\n", b ? "commissioned" : "not commissioned");
     return;
   }
   if (!strcmp(k, "can")) {
@@ -492,7 +536,7 @@ void Console::cmdSig(int argc, char **argv) {
 
 void Console::cmdTest(int argc, char **argv, uint32_t nowMs) {
   if (argc < 2) {
-    print("usage: test energize|deenergize|stock [seconds]\r\n");
+    print("usage: test duty <percent> [seconds] | test stock\r\n");
     return;
   }
   lowercase(argv[1]);
@@ -503,33 +547,110 @@ void Console::cmdTest(int argc, char **argv, uint32_t nowMs) {
     return;
   }
 
-  // Driving the solenoid by hand while the engine is running fights the ECU
+  // Driving the actuator by hand while the engine is running fights the ECU
   // and tells you nothing useful, so refuse it.
   if (engineLikelyRunning()) {
     print("refused: engine is running. Test with the engine off.\r\n");
     return;
   }
 
-  bool energize;
-  if (!strcmp(argv[1], "energize")) {
-    energize = true;
-  } else if (!strcmp(argv[1], "deenergize")) {
-    energize = false;
-  } else {
-    print("usage: test energize|deenergize|stock [seconds]\r\n");
+  if (strcmp(argv[1], "duty") != 0) {
+    print("usage: test duty <percent> [seconds] | test stock\r\n");
+    return;
+  }
+
+  float pct = 0.0f;
+  if (argc < 3 || !parseFloat(argv[2], pct) || pct < 0.0f || pct > 100.0f) {
+    print("percent must be 0..100\r\n");
+    return;
+  }
+  if (settings_.actuator.pwmHz == 0) {
+    print("no carrier frequency yet. Run `probe` with the ignition on first, "
+          "or `set actuator.pwmhz <hz>`.\r\n");
     return;
   }
 
   long seconds = 10;
-  if (argc >= 3 && (!parseLong(argv[2], seconds) || seconds < 1 || seconds > 60)) {
+  if (argc >= 4 && (!parseLong(argv[3], seconds) || seconds < 1 || seconds > 60)) {
     print("seconds must be 1..60\r\n");
     return;
   }
 
-  controller_.startTest(true, energize, static_cast<uint32_t>(seconds) * 1000u,
+  const DutyTenths duty = static_cast<DutyTenths>(pct * 10.0f + 0.5f);
+  controller_.startTest(true, duty, static_cast<uint32_t>(seconds) * 1000u,
                         nowMs);
-  printf("intercept relay on, solenoid %s for %ld s\r\n",
-         energize ? "ENERGISED" : "de-energised", seconds);
+  printf("intercept relay on, driving %.1f %% at %u Hz for %ld s\r\n",
+         duty / 10.0, static_cast<unsigned>(settings_.actuator.pwmHz), seconds);
+}
+
+void Console::cmdProbe() {
+  if (meter_.edgeCount() == 0) {
+    print("no edges on the signal line at all.\r\n"
+          "  - ignition on? the ECU only drives the actuator when awake\r\n"
+          "  - is the sense input on the right wire? it is the one that is\r\n"
+          "    neither 12 V nor ground with the connector back-probed\r\n");
+    return;
+  }
+  if (!meter_.valid()) {
+    printf("line has switched %lu times but is idle now (parked high or low)\r\n",
+           static_cast<unsigned long>(meter_.edgeCount()));
+    return;
+  }
+  printf("%u Hz, duty %.1f %%, %lu edges%s\r\n",
+         static_cast<unsigned>(meter_.frequencyHz()), meter_.duty() / 10.0,
+         static_cast<unsigned long>(meter_.edgeCount()),
+         meter_.stable() ? ", steady" : ", CHANGING - hold still and re-read");
+}
+
+void Console::cmdLearn(int argc, char **argv) {
+  if (argc < 2) {
+    print("usage: learn open|closed\r\n"
+          "Put the car in the drive mode that gives you that flap position,\r\n"
+          "let it settle, then run the command.\r\n");
+    return;
+  }
+  lowercase(argv[1]);
+  const bool wantOpen = !strcmp(argv[1], "open");
+  if (!wantOpen && strcmp(argv[1], "closed") != 0) {
+    print("usage: learn open|closed\r\n");
+    return;
+  }
+
+  if (!meter_.valid()) {
+    print("nothing to learn: no PWM on the signal line. Run `probe`.\r\n");
+    return;
+  }
+  if (!meter_.stable()) {
+    print("refused: the command is still changing. Let the ECU settle on one "
+          "position, then try again.\r\n");
+    return;
+  }
+
+  ActuatorSettings &a = settings_.actuator;
+  a.pwmHz = meter_.frequencyHz();
+  if (wantOpen) {
+    a.openDutyTenths = meter_.duty();
+    a.openLearned = true;
+  } else {
+    a.closedDutyTenths = meter_.duty();
+    a.closedLearned = true;
+  }
+
+  printf("learned %s = %.1f %% at %u Hz\r\n", wantOpen ? "open" : "closed",
+         meter_.duty() / 10.0, static_cast<unsigned>(a.pwmHz));
+
+  if (!a.openLearned || !a.closedLearned) {
+    printf("still need the %s position.\r\n", a.openLearned ? "closed" : "open");
+    return;
+  }
+  if (a.openDutyTenths == a.closedDutyTenths) {
+    a.commissioned = false;
+    print("open and closed came out identical, so one was captured in the "
+          "wrong drive mode. Not commissioned.\r\n");
+    return;
+  }
+  a.commissioned = true;
+  print("both positions known, overrides enabled. `save` to keep them.\r\n");
 }
 
 void Console::cmdHunt(int argc, char **argv) {

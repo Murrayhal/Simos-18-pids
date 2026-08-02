@@ -5,6 +5,7 @@
 #pragma once
 
 #include "can_decode.h"
+#include "pwm_meter.h"
 #include "settings.h"
 #include "signal_hunter.h"
 #include "valve_controller.h"
@@ -16,7 +17,7 @@ class Console {
   typedef void (*WriteFn)(void *ctx, const char *text);
 
   Console(Settings &settings, ValveController &controller, CanDecoder &decoder,
-          SignalHunter &hunter, Mode &mode);
+          SignalHunter &hunter, PwmMeter &meter, Mode &mode);
 
   void setWriter(WriteFn fn, void *ctx);
   void greet();
@@ -48,6 +49,8 @@ class Console {
   void cmdShow();
   void cmdSig(int argc, char **argv);
   void cmdTest(int argc, char **argv, uint32_t nowMs);
+  void cmdProbe();
+  void cmdLearn(int argc, char **argv);
   void cmdHunt(int argc, char **argv);
   void cmdSniff(int argc, char **argv);
   void cmdCan();
@@ -58,6 +61,7 @@ class Console {
   ValveController &controller_;
   CanDecoder &decoder_;
   SignalHunter &hunter_;
+  PwmMeter &meter_;
   Mode &mode_;
 
   WriteFn write_;

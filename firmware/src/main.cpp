@@ -19,6 +19,7 @@
 #include "can_decode.h"
 #include "console.h"
 #include "led_indicator.h"
+#include "pwm_meter.h"
 #include "settings.h"
 #include "signal_hunter.h"
 #include "valve_controller.h"
@@ -33,7 +34,9 @@ Mode g_mode = Mode::Auto;
 CanDecoder g_decoder(g_settings);
 ValveController g_controller(g_settings);
 SignalHunter g_hunter;
-Console g_console(g_settings, g_controller, g_decoder, g_hunter, g_mode);
+PwmMeter g_meter;
+Console g_console(g_settings, g_controller, g_decoder, g_hunter, g_meter,
+                  g_mode);
 Button g_button;
 LedIndicator g_led;
 
@@ -43,10 +46,12 @@ Preferences g_prefs;
 bool g_canUp = false;
 uint32_t g_lastCanRetryMs = 0;
 
-// Output sequencing state. The relay and the solenoid driver are never allowed
-// to move in the same instant; see RELAY_SETTLE_MS.
+// Output sequencing state. The relay and the PWM driver are never allowed to
+// move in the same instant; see RELAY_SETTLE_MS.
 bool g_relayOn = false;
-bool g_solenoidOn = false;
+bool g_pwmOn = false;
+DutyTenths g_pwmDuty = 0;
+uint16_t g_pwmHz = 0;
 uint32_t g_relayChangedMs = 0;
 
 // ---------------------------------------------------------------- storage ---
@@ -90,7 +95,74 @@ void writeRelay(bool on) {
 #endif
 }
 
-void writeSolenoid(bool on) { digitalWrite(PIN_SOLENOID, on ? HIGH : LOW); }
+// Edge capture on the ECU's command line.
+//
+// The ISR does not touch PwmMeter: that code lives in flash, and calling into
+// flash from an interrupt deadlocks the chip whenever a flash operation (an NVS
+// write, say) happens to be in progress. So the handler only stamps a
+// timestamp and level into an IRAM ring buffer, and the main loop drains it.
+struct Edge {
+  uint32_t us;
+  bool level;
+};
+const uint16_t kEdgeQueueLen = 128;
+volatile Edge g_edges[kEdgeQueueLen];
+volatile uint16_t g_edgeHead = 0;  // written by the ISR only
+volatile uint16_t g_edgeTail = 0;  // written by the loop only
+volatile uint32_t g_edgesDropped = 0;
+
+void IRAM_ATTR onSenseEdge() {
+  const uint16_t head = g_edgeHead;
+  const uint16_t next = static_cast<uint16_t>((head + 1) % kEdgeQueueLen);
+  if (next == g_edgeTail) {
+    g_edgesDropped++;  // loop is behind; better to lose edges than to block
+    return;
+  }
+  g_edges[head].us = micros();
+  g_edges[head].level = digitalRead(PIN_ECU_SENSE) == HIGH;
+  g_edgeHead = next;
+}
+
+void drainEdges() {
+  while (g_edgeTail != g_edgeHead) {
+    const Edge e = {g_edges[g_edgeTail].us, g_edges[g_edgeTail].level};
+    g_edgeTail = static_cast<uint16_t>((g_edgeTail + 1) % kEdgeQueueLen);
+    g_meter.onEdge(e.us, e.level);
+  }
+}
+
+// Stops driving the actuator line entirely. Used whenever we are not
+// intercepting, so we are never fighting the ECU on a shared wire.
+void pwmIdle() {
+  if (!g_pwmOn) return;
+  ledcWrite(ACTUATOR_LEDC_CHANNEL, ACTUATOR_PWM_INVERTED ? (1u << ACTUATOR_LEDC_BITS) - 1u : 0);
+  ledcDetachPin(PIN_ACTUATOR_PWM);
+  pinMode(PIN_ACTUATOR_PWM, INPUT);
+  g_pwmOn = false;
+  g_pwmDuty = 0;
+}
+
+void pwmDrive(uint16_t hz, DutyTenths duty) {
+  if (hz == 0) {
+    pwmIdle();
+    return;
+  }
+  if (!g_pwmOn || hz != g_pwmHz) {
+    ledcSetup(ACTUATOR_LEDC_CHANNEL, hz, ACTUATOR_LEDC_BITS);
+    ledcAttachPin(PIN_ACTUATOR_PWM, ACTUATOR_LEDC_CHANNEL);
+    g_pwmHz = hz;
+    g_pwmOn = true;
+    g_pwmDuty = static_cast<DutyTenths>(~duty);  // force the write below
+  }
+  if (duty == g_pwmDuty) return;
+  const uint32_t full = (1u << ACTUATOR_LEDC_BITS) - 1u;
+  uint32_t counts = (static_cast<uint32_t>(duty) * full) / kDutyMax;
+#if ACTUATOR_PWM_INVERTED
+  counts = full - counts;
+#endif
+  ledcWrite(ACTUATOR_LEDC_CHANNEL, counts);
+  g_pwmDuty = duty;
+}
 
 void writeLed(const LedOut &c) {
 #if LED_ACTIVE_LOW
@@ -105,17 +177,11 @@ void writeLed(const LedOut &c) {
 }
 
 // Applies the controller's wishes with make-before-break sequencing:
-//   taking control   relay on, wait, then drive the solenoid
-//   handing back     solenoid off first, then relay off
+//   taking control   relay on, wait for the contacts, then start the PWM
+//   handing back     PWM off first, then relay off
 void applyOutputs(const ControllerOutput &out, uint32_t nowMs) {
-  const bool wantRelay = out.interceptRelay;
-  const bool wantSolenoid = out.interceptRelay && out.solenoidDrive;
-
-  if (!wantRelay) {
-    if (g_solenoidOn) {
-      g_solenoidOn = false;
-      writeSolenoid(false);
-    }
+  if (!out.interceptRelay) {
+    pwmIdle();
     if (g_relayOn) {
       g_relayOn = false;
       g_relayChangedMs = nowMs;
@@ -128,20 +194,14 @@ void applyOutputs(const ControllerOutput &out, uint32_t nowMs) {
     g_relayOn = true;
     g_relayChangedMs = nowMs;
     writeRelay(true);
-    // Solenoid waits for the contacts.
-    if (g_solenoidOn) {
-      g_solenoidOn = false;
-      writeSolenoid(false);
-    }
+    // The command waits for the contacts to finish transferring.
+    pwmIdle();
     return;
   }
 
   if ((nowMs - g_relayChangedMs) < RELAY_SETTLE_MS) return;
 
-  if (g_solenoidOn != wantSolenoid) {
-    g_solenoidOn = wantSolenoid;
-    writeSolenoid(wantSolenoid);
-  }
+  pwmDrive(g_settings.actuator.pwmHz, out.commandDuty);
 }
 
 // --------------------------------------------------------------------- CAN ---
@@ -239,9 +299,11 @@ void setup() {
   // Outputs first and low, before anything that could take time or fail. A
   // half-initialised controller must not be holding the flap anywhere.
   pinMode(PIN_RELAY, OUTPUT);
-  pinMode(PIN_SOLENOID, OUTPUT);
-  writeSolenoid(false);
   writeRelay(false);
+  // High impedance until we have a reason to drive it, so a boot with the
+  // relay stuck closed still cannot inject a command.
+  pinMode(PIN_ACTUATOR_PWM, INPUT);
+  pinMode(PIN_ECU_SENSE, INPUT);
 
   pinMode(PIN_LED_R, OUTPUT);
   pinMode(PIN_LED_G, OUTPUT);
@@ -260,6 +322,8 @@ void setup() {
     SPI.begin();
     g_canUp = canBegin();
   }
+
+  attachInterrupt(digitalPinToInterrupt(PIN_ECU_SENSE), onSenseEdge, CHANGE);
 
   g_controller.begin(millis());
   g_console.greet();
@@ -280,6 +344,8 @@ void loop() {
   }
   if (g_canUp) serviceCanRx(now);
   g_decoder.tick(now);
+  drainEdges();
+  g_meter.tick(micros());
 
   while (Serial.available() > 0) {
     g_console.feed(static_cast<char>(Serial.read()), now);

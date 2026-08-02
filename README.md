@@ -1,9 +1,10 @@
 # S3 8V exhaust valve controller
 
-An ESP32 controller for the factory exhaust flap on an Audi S3 8V. It sits
-between the ECU and the flap solenoid, reads engine speed, pedal, road speed,
-coolant and drive select off the powertrain CAN bus, and gives you four modes on
-a single dashboard button:
+An ESP32 controller for the factory exhaust flaps on an Audi S3 8V. The flaps
+are driven by three-wire electric servo actuators whose position is commanded by
+a PWM duty cycle from the ECU. This sits on that signal line, reads engine
+speed, pedal, road speed, coolant and drive select off the powertrain CAN bus,
+and gives you four modes on a single dashboard button:
 
 | Mode | Behaviour |
 | --- | --- |
@@ -15,15 +16,16 @@ a single dashboard button:
 ## How it stays out of trouble
 
 - **Fail-safe by wiring, not by software.** The intercept relay is de-energised
-  at reset, which routes the solenoid straight back to the ECU. A crash, a
-  brown-out, a blown fuse or a pulled connector all land on stock behaviour.
-- **No DTCs.** The second pole of the intercept relay hangs a dummy load on the
-  ECU's driver whenever we take over, so its open-circuit diagnostic stays happy.
+  at reset, which routes the ECU's signal straight through to the actuator. A
+  crash, a brown-out, a blown fuse or a pulled connector all land on stock
+  behaviour. The PWM pin is high-impedance until we have a reason to drive it.
+- **Nothing invented.** The controller measures the PWM the ECU itself sends for
+  open and for closed, and replays exactly those commands.
 - **Listen-only on CAN.** The controller never transmits onto a bus that also
   carries braking and steering traffic.
 - **Interlocks.** No overrides on a cold engine, a stopped engine, a dead bus,
   or during the first few seconds after start.
-- **No guessed calibration.** It ships with the solenoid polarity unknown and
+- **No guessed calibration.** It ships with the actuator commands unknown and
   every CAN signal disabled, refuses to move until you have commissioned it on
   your own car, and includes the tooling to do that.
 
@@ -38,7 +40,7 @@ docs/
   hardware.md      BOM, the intercept wiring, the MCP2515 3.3 V trap
   commissioning.md what to do on the car, in order
   can-signals.md   finding your car's frame IDs and bit offsets
-  no-canbus.md     direct control with no bus tap, including a no-firmware build
+  no-canbus.md     direct control with no bus tap
   operation.md     modes, LED codes, console reference, drone tuning
 ```
 
@@ -60,9 +62,9 @@ pio device monitor -d firmware         # console at 115200
 3. Find your CAN signals with [docs/can-signals.md](docs/can-signals.md).
 4. Day-to-day use and tuning is in [docs/operation.md](docs/operation.md).
 
-**Just want a switch that opens and closes it?** You may not need any of this —
-see [docs/no-canbus.md](docs/no-canbus.md), which covers direct control with one
-switch and a relay and no microcontroller at all.
+**Just want to open and close them on demand?** You can skip the whole CAN side
+— see [docs/no-canbus.md](docs/no-canbus.md). You cannot skip the
+microcontroller, though: the actuator wants PWM, not a switch.
 
 Scan for fault codes after the first drive, and keep a copy of `show` output —
 it is the only record of your commissioning.

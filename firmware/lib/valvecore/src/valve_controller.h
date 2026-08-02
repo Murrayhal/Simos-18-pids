@@ -9,12 +9,13 @@ namespace valve {
 struct ControllerOutput {
   // What the flap should be doing.
   Target target = Target::Stock;
-  // Intercept relay: de-energised hands the solenoid back to the ECU, so every
+  // Intercept relay: de-energised hands the actuator back to the ECU, so every
   // failure path (reset, brown-out, blown fuse, firmware crash) lands on stock
   // behaviour without anybody having to decide that it should.
   bool interceptRelay = false;
-  // Low-side drive for the solenoid. Only meaningful while intercepting.
-  bool solenoidDrive = false;
+  // Duty cycle to command the actuator with. Only meaningful while
+  // intercepting; the platform layer stops generating PWM entirely otherwise.
+  DutyTenths commandDuty = 0;
   // Set when an override was asked for but refused, and why.
   Lockout lockout = Lockout::None;
   // True when the controller is actually holding the flap somewhere the ECU
@@ -34,11 +35,11 @@ class ValveController {
   ControllerOutput update(uint32_t nowMs, Mode mode, const VehicleState &state,
                           uint16_t batteryMv);
 
-  // Commissioning aid: drive the outputs directly for a bounded time, ignoring
-  // every interlock. This is how the installer discovers which way the flap
-  // moves, so it deliberately works before polarity is known. Callers are
-  // expected to refuse this with the engine running.
-  void startTest(bool interceptRelay, bool solenoid, uint32_t durationMs,
+  // Commissioning aid: drive the actuator at a chosen duty for a bounded time,
+  // ignoring every interlock. This is how the installer finds the end
+  // positions, so it deliberately works before anything is commissioned.
+  // Callers are expected to refuse it with the engine running.
+  void startTest(bool interceptRelay, DutyTenths duty, uint32_t durationMs,
                  uint32_t nowMs);
   void stopTest();
   bool testActive() const { return testActive_; }
@@ -68,7 +69,7 @@ class ValveController {
 
   bool testActive_;
   bool testIntercept_;
-  bool testSolenoid_;
+  DutyTenths testDuty_;
   uint32_t testUntilMs_;
 
   ControllerOutput last_;

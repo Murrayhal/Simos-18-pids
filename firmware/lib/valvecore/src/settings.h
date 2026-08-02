@@ -7,7 +7,7 @@ namespace valve {
 
 // Bumped whenever the layout of Settings changes so stored blobs from an older
 // firmware are discarded rather than misread.
-static const uint16_t kSettingsVersion = 4;
+static const uint16_t kSettingsVersion = 5;
 
 struct SmartSettings {
   // Hysteresis pair: open above openRpm, close again below closeRpm.
@@ -48,18 +48,29 @@ struct SafetySettings {
   uint16_t maxBatteryMv;
 };
 
+// The flap actuator is a self-contained servo motor on three wires: 12 V,
+// ground, and one signal line whose PWM duty cycle commands the position. We
+// do not invent those numbers - they are measured off the ECU's own line with
+// `learn`, so what we replay is exactly what the car already sends.
+struct ActuatorSettings {
+  // Carrier frequency of the ECU's command signal, measured on the car.
+  uint16_t pwmHz;
+  // Duty the ECU sends for each end position, measured on the car.
+  DutyTenths openDutyTenths;
+  DutyTenths closedDutyTenths;
+  // Which end positions have actually been captured. Kept separate from the
+  // duty values because 0 % is a legitimate command, not a "not set" marker.
+  bool openLearned;
+  bool closedLearned;
+  // True once both positions are known. Until then the controller refuses to
+  // drive the actuator at all.
+  bool commissioned;
+};
+
 struct Settings {
   uint16_t version;
 
-  // True when energising the solenoid CLOSES the flap (quiet), false when
-  // energising OPENS it. Determined on the car during commissioning; see
-  // docs/commissioning.md. Getting this backwards inverts every mode, which is
-  // why there is no factory default that pretends to know the answer.
-  bool energizedClosesValve;
-
-  // True once the installer has confirmed the polarity above. Until then the
-  // controller refuses to drive the solenoid at all.
-  bool polarityConfirmed;
+  ActuatorSettings actuator;
 
   // False for an install with no CAN tap at all: button and LED only, driving
   // the flap open or shut on demand. SMART mode disappears (it has nothing to

@@ -25,17 +25,38 @@
 #ifndef PIN_RELAY
 #define PIN_RELAY 25
 #endif
-// Low-side MOSFET gate driving the solenoid while we are intercepting.
-#ifndef PIN_SOLENOID
-#define PIN_SOLENOID 26
+// PWM command output to the actuator's signal pin, through a level shifter or
+// open-drain driver plus pull-up to whatever the actuator expects.
+#ifndef PIN_ACTUATOR_PWM
+#define PIN_ACTUATOR_PWM 26
+#endif
+// Set to 1 if your output stage inverts (e.g. a single N-channel FET pulling
+// down against a pull-up). Then a 40% command drives the gate 40% of the time
+// low, which the actuator sees as 60%, so the firmware compensates.
+#ifndef ACTUATOR_PWM_INVERTED
+#define ACTUATOR_PWM_INVERTED 0
+#endif
+// LEDC channel and resolution for the command output.
+#ifndef ACTUATOR_LEDC_CHANNEL
+#define ACTUATOR_LEDC_CHANNEL 0
+#endif
+#ifndef ACTUATOR_LEDC_BITS
+#define ACTUATOR_LEDC_BITS 12
+#endif
+
+// Sense input, permanently connected to the ECU's side of the signal line
+// through a divider. This is what `probe` and `learn` read, and it stays
+// connected whether or not we are intercepting.
+#ifndef PIN_ECU_SENSE
+#define PIN_ECU_SENSE 35
 #endif
 // Set to 1 if your relay board is active-low (most opto-isolated modules are).
 #ifndef RELAY_ACTIVE_LOW
 #define RELAY_ACTIVE_LOW 0
 #endif
-// Time allowed for the relay contacts to finish transferring before the
-// solenoid driver is allowed to switch. Stops us driving into a contact that
-// is still in mid-air, and stops any back-feed into the ECU's own driver.
+// Time allowed for the relay contacts to finish transferring before the PWM
+// driver is allowed to start. Stops us driving into a contact that is still in
+// mid-air, and stops any back-feed into the ECU's own output.
 #ifndef RELAY_SETTLE_MS
 #define RELAY_SETTLE_MS 20
 #endif

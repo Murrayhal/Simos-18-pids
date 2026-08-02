@@ -12,7 +12,7 @@ ValveController::ValveController(const Settings &settings)
       engineStartMs_(0),
       testActive_(false),
       testIntercept_(false),
-      testSolenoid_(false),
+      testDuty_(0),
       testUntilMs_(0),
       started_(false) {}
 
@@ -28,11 +28,11 @@ void ValveController::begin(uint32_t nowMs) {
   started_ = true;
 }
 
-void ValveController::startTest(bool interceptRelay, bool solenoid,
+void ValveController::startTest(bool interceptRelay, DutyTenths duty,
                                 uint32_t durationMs, uint32_t nowMs) {
   testActive_ = true;
   testIntercept_ = interceptRelay;
-  testSolenoid_ = solenoid;
+  testDuty_ = duty;
   testUntilMs_ = nowMs + durationMs;
 }
 
@@ -90,7 +90,7 @@ Lockout ValveController::evaluateLockout(const VehicleState &state,
                                          uint32_t nowMs, uint16_t batteryMv) {
   const SafetySettings &sf = settings_.safety;
 
-  if (!settings_.polarityConfirmed) return Lockout::NotCommissioned;
+  if (!settings_.actuator.commissioned) return Lockout::NotCommissioned;
 
   if (sf.batterySenseFitted &&
       (batteryMv < sf.minBatteryMv || batteryMv > sf.maxBatteryMv)) {
@@ -130,18 +130,18 @@ ControllerOutput ValveController::applyTarget(Target target,
   switch (target) {
     case Target::Open:
       out.interceptRelay = true;
-      out.solenoidDrive = !settings_.energizedClosesValve;
+      out.commandDuty = settings_.actuator.openDutyTenths;
       out.overrideActive = true;
       break;
     case Target::Closed:
       out.interceptRelay = true;
-      out.solenoidDrive = settings_.energizedClosesValve;
+      out.commandDuty = settings_.actuator.closedDutyTenths;
       out.overrideActive = true;
       break;
     case Target::Stock:
     default:
       out.interceptRelay = false;
-      out.solenoidDrive = false;
+      out.commandDuty = 0;
       out.overrideActive = false;
       break;
   }
@@ -160,7 +160,7 @@ ControllerOutput ValveController::update(uint32_t nowMs, Mode mode,
       ControllerOutput out;
       out.target = Target::Stock;
       out.interceptRelay = testIntercept_;
-      out.solenoidDrive = testSolenoid_;
+      out.commandDuty = testDuty_;
       out.overrideActive = testIntercept_;
       out.testActive = true;
       // A test resets the dwell clock so normal control does not immediately

@@ -30,12 +30,13 @@ struct Fixture {
   CanDecoder decoder;
   ValveController controller;
   SignalHunter hunter;
+  PwmMeter meter;
   Console console;
 
   Fixture()
       : decoder(settings),
         controller(settings),
-        console(settings, controller, decoder, hunter, mode) {
+        console(settings, controller, decoder, hunter, meter, mode) {
     console.setWriter(capture, nullptr);
     controller.begin(0);
   }
@@ -44,6 +45,19 @@ struct Fixture {
     g_out.clear();
     console.handleLine(line, nowMs);
     return g_out;
+  }
+
+  // Feed the meter a steady PWM signal so `probe` and `learn` have something
+  // to read, exactly as the ISR would on the car.
+  void feedPwm(uint16_t hz, unsigned dutyPct, uint32_t startUs = 1000000) {
+    const uint32_t periodUs = 1000000u / hz;
+    const uint32_t highUs = periodUs * dutyPct / 100u;
+    uint32_t t = startUs;
+    for (int i = 0; i < 20; ++i) {
+      meter.onEdge(t, true);
+      meter.onEdge(t + highUs, false);
+      t += periodUs;
+    }
   }
 };
 
@@ -78,16 +92,86 @@ void run_console_tests() {
     CHECK(contains(f.run("set smart.openrpm banana"), "expected"));
   }
 
-  TEST("declaring the polarity is what commissions the controller");
+  TEST("learning both end positions is what commissions the controller");
   {
     Fixture f;
-    CHECK(!f.settings.polarityConfirmed);
-    f.run("set polarity opens");
-    CHECK(f.settings.polarityConfirmed);
-    CHECK(!f.settings.energizedClosesValve);
-    f.run("set polarity closes");
-    CHECK(f.settings.energizedClosesValve);
-    CHECK(contains(f.run("set polarity sideways"), "usage"));
+    CHECK(!f.settings.actuator.commissioned);
+
+    f.feedPwm(200, 15);
+    CHECK(contains(f.run("learn closed"), "learned closed"));
+    CHECK(f.settings.actuator.closedLearned);
+    CHECK_EQ(f.settings.actuator.pwmHz, 200);
+    CHECK(!f.settings.actuator.commissioned);  // only half the story so far
+
+    f.feedPwm(200, 80, 5000000);
+    CHECK(contains(f.run("learn open"), "overrides enabled"));
+    CHECK(f.settings.actuator.commissioned);
+    // 15% and 80% of a 5000 us period, within the meter's resolution.
+    CHECK(f.settings.actuator.closedDutyTenths > 130);
+    CHECK(f.settings.actuator.closedDutyTenths < 170);
+    CHECK(f.settings.actuator.openDutyTenths > 780);
+    CHECK(f.settings.actuator.openDutyTenths < 820);
+  }
+
+  TEST("learning the same command twice is caught, not commissioned");
+  {
+    Fixture f;
+    f.feedPwm(200, 40);
+    f.run("learn closed");
+    const std::string out = f.run("learn open");
+    CHECK(contains(out, "wrong drive mode"));
+    CHECK(!f.settings.actuator.commissioned);
+  }
+
+  TEST("learning refuses a signal that is still moving");
+  {
+    Fixture f;
+    // A sweep: every period differs, so nothing ever settles.
+    uint32_t t = 1000000;
+    for (unsigned pct = 10; pct < 90; pct += 5) {
+      const uint32_t period = 5000;
+      f.meter.onEdge(t, true);
+      f.meter.onEdge(t + period * pct / 100, false);
+      t += period;
+    }
+    CHECK(contains(f.run("learn open"), "still changing"));
+    CHECK(!f.settings.actuator.openLearned);
+  }
+
+  TEST("learning refuses a dead line");
+  {
+    Fixture f;
+    CHECK(contains(f.run("learn open"), "no PWM"));
+    CHECK(!f.settings.actuator.openLearned);
+  }
+
+  TEST("probe reports what is on the line");
+  {
+    Fixture f;
+    CHECK(contains(f.run("probe"), "no edges"));
+    f.feedPwm(200, 30);
+    const std::string out = f.run("probe");
+    CHECK(contains(out, "200 Hz"));
+    CHECK(contains(out, "steady"));
+  }
+
+  TEST("confirm cannot be forced on before the positions are known");
+  {
+    Fixture f;
+    CHECK(contains(f.run("set confirm on"), "refused"));
+    CHECK(!f.settings.actuator.commissioned);
+  }
+
+  TEST("duties can be entered by hand and commission the controller");
+  {
+    Fixture f;
+    f.run("set actuator.pwmhz 200");
+    f.run("set actuator.closedduty 15");
+    CHECK(!f.settings.actuator.commissioned);
+    f.run("set actuator.openduty 80.5");
+    CHECK(f.settings.actuator.commissioned);
+    CHECK_EQ(f.settings.actuator.openDutyTenths, 805);
+    CHECK(contains(f.run("set actuator.openduty 120"), "expected"));
   }
 
   TEST("sig configures and disables a signal");
@@ -122,6 +206,7 @@ void run_console_tests() {
     f.run("sig rpm 0x121 16 16 le 0.25 0");
     f.settings.smart.openRpm = 3777;
     const std::string dump = f.run("show");
+    CHECK(contains(dump, "set actuator.pwmhz"));
     CHECK(contains(dump, "set smart.openrpm 3777"));
     CHECK(contains(dump, "sig rpm 0x121 16 16 le 0.25 0"));
     CHECK(contains(dump, "sig speed off"));
@@ -149,6 +234,7 @@ void run_console_tests() {
   TEST("bench test is refused while the engine is running");
   {
     Fixture f;
+    f.run("set actuator.pwmhz 200");
     f.run("sig rpm 0x121 0 16 le 1 0");
     CanFrame frame;
     frame.id = 0x121;
@@ -158,17 +244,21 @@ void run_console_tests() {
     frame.data[1] = 0x03;
     f.decoder.onFrame(frame, 1000);
 
-    CHECK(contains(f.run("test energize", 1000), "refused"));
+    CHECK(contains(f.run("test duty 50", 1000), "refused"));
     CHECK(!f.controller.testActive());
   }
 
   TEST("bench test runs with the engine off and can be cleared");
   {
     Fixture f;
-    CHECK(contains(f.run("test energize 5", 1000), "ENERGISED"));
+    // Without a carrier frequency there is nothing to drive.
+    CHECK(contains(f.run("test duty 50 5", 1000), "no carrier frequency"));
+    f.run("set actuator.pwmhz 200");
+    CHECK(contains(f.run("test duty 50 5", 1000), "50.0 %"));
     CHECK(f.controller.testActive());
     f.run("test stock", 1200);
     CHECK(!f.controller.testActive());
+    CHECK(contains(f.run("test duty 150", 1000), "0..100"));
   }
 
   TEST("hunt refuses to mark before it has started");
@@ -232,7 +322,7 @@ void run_console_tests() {
     CHECK(contains(g_out, "no CAN tap"));
     CHECK(!contains(g_out, "CAN signals not fully configured"));
     // It is still told about the polarity, which matters either way.
-    CHECK(contains(g_out, "polarity not commissioned"));
+    CHECK(contains(g_out, "actuator not commissioned"));
   }
 
   TEST("greeting warns about an uncommissioned install");
@@ -240,7 +330,7 @@ void run_console_tests() {
     Fixture f;
     g_out.clear();
     f.console.greet();
-    CHECK(contains(g_out, "polarity not commissioned"));
+    CHECK(contains(g_out, "actuator not commissioned"));
     CHECK(contains(g_out, "CAN signals not fully configured"));
   }
 }

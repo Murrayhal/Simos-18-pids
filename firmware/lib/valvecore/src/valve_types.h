@@ -24,11 +24,15 @@ enum class Target : uint8_t {
   Closed      // flap closed, gas routed through the muffler, quiet
 };
 
+// Duty cycle in tenths of a percent, so 0..1000 spans 0..100.0%.
+typedef uint16_t DutyTenths;
+static const DutyTenths kDutyMax = 1000;
+
 // Why an override was refused. Surfaced on the LED and the serial console so a
 // "my button does nothing" complaint is diagnosable without a laptop.
 enum class Lockout : uint8_t {
   None = 0,
-  NotCommissioned,  // solenoid polarity has never been confirmed on this car
+  NotCommissioned,  // the actuator's open/closed commands are not known yet
   Voltage,          // battery outside the safe window
   CanLost,          // no usable bus data and the config demands it
   EngineOff,        // engine not turning, do not sit energised on a parked car

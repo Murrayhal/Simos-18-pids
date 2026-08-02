@@ -25,8 +25,12 @@ VehicleState healthyState(uint16_t rpm = 1000, uint8_t pedal = 0) {
 Settings commissioned() {
   Settings s;
   loadDefaults(s);
-  s.polarityConfirmed = true;
-  s.energizedClosesValve = true;
+  s.actuator.pwmHz = 200;
+  s.actuator.openDutyTenths = 800;   // 80.0%
+  s.actuator.closedDutyTenths = 150; // 15.0%
+  s.actuator.openLearned = true;
+  s.actuator.closedLearned = true;
+  s.actuator.commissioned = true;
   s.safety.startupQuietMs = 0;
   s.safety.minDwellMs = 0;
   return s;
@@ -37,16 +41,16 @@ Settings commissioned() {
 void run_valve_controller_tests() {
   printf("valve_controller\n");
 
-  TEST("an uncommissioned controller never touches the solenoid");
+  TEST("an uncommissioned controller never drives the actuator");
   {
     Settings s = commissioned();
-    s.polarityConfirmed = false;
+    s.actuator.commissioned = false;
     ValveController c(s);
     c.begin(0);
     const ControllerOutput out = c.update(100, Mode::Open, healthyState(), 0);
     CHECK_EQ(static_cast<int>(out.target), static_cast<int>(Target::Stock));
     CHECK(!out.interceptRelay);
-    CHECK(!out.solenoidDrive);
+    CHECK_EQ(out.commandDuty, 0);
     CHECK_EQ(static_cast<int>(out.lockout),
              static_cast<int>(Lockout::NotCommissioned));
   }
@@ -63,34 +67,34 @@ void run_valve_controller_tests() {
     CHECK_EQ(static_cast<int>(out.lockout), static_cast<int>(Lockout::None));
   }
 
-  TEST("OPEN drives the solenoid according to polarity");
+  TEST("OPEN and QUIET replay the learned end-position commands");
   {
     Settings s = commissioned();
-    s.energizedClosesValve = true;  // energised = quiet
     ValveController c(s);
     c.begin(0);
     ControllerOutput out = c.update(100, Mode::Open, healthyState(), 0);
     CHECK_EQ(static_cast<int>(out.target), static_cast<int>(Target::Open));
     CHECK(out.interceptRelay);
-    CHECK(!out.solenoidDrive);  // opening means NOT energising on this car
+    CHECK_EQ(out.commandDuty, 800);
     CHECK(out.overrideActive);
 
     out = c.update(200, Mode::Quiet, healthyState(), 0);
     CHECK_EQ(static_cast<int>(out.target), static_cast<int>(Target::Closed));
     CHECK(out.interceptRelay);
-    CHECK(out.solenoidDrive);
+    CHECK_EQ(out.commandDuty, 150);
   }
 
-  TEST("the opposite polarity inverts both modes");
+  TEST("a car whose duties run the other way needs no code change");
   {
+    // Nothing in the controller assumes which end of the range is loud; the
+    // learned numbers carry it.
     Settings s = commissioned();
-    s.energizedClosesValve = false;  // energised = loud
+    s.actuator.openDutyTenths = 100;
+    s.actuator.closedDutyTenths = 900;
     ValveController c(s);
     c.begin(0);
-    ControllerOutput out = c.update(100, Mode::Open, healthyState(), 0);
-    CHECK(out.solenoidDrive);
-    out = c.update(200, Mode::Quiet, healthyState(), 0);
-    CHECK(!out.solenoidDrive);
+    CHECK_EQ(c.update(100, Mode::Open, healthyState(), 0).commandDuty, 100);
+    CHECK_EQ(c.update(200, Mode::Quiet, healthyState(), 0).commandDuty, 900);
   }
 
   TEST("a cold engine refuses the override");
@@ -283,7 +287,7 @@ void run_valve_controller_tests() {
     out = c.update(1100, Mode::Open, healthyState(0), 0);
     CHECK_EQ(static_cast<int>(out.target), static_cast<int>(Target::Stock));
     CHECK(!out.interceptRelay);
-    CHECK(!out.solenoidDrive);
+    CHECK_EQ(out.commandDuty, 0);
   }
 
   TEST("with no CAN tap the bus interlocks are skipped, not failed");
@@ -316,36 +320,36 @@ void run_valve_controller_tests() {
   {
     Settings s = commissioned();
     s.canFitted = false;
-    s.polarityConfirmed = false;
+    s.actuator.commissioned = false;
     ValveController c(s);
     c.begin(0);
     ControllerOutput out = c.update(100, Mode::Open, VehicleState(), 0);
     CHECK_EQ(static_cast<int>(out.lockout),
              static_cast<int>(Lockout::NotCommissioned));
 
-    s.polarityConfirmed = true;
+    s.actuator.commissioned = true;
     s.safety.batterySenseFitted = true;
     out = c.update(200, Mode::Open, VehicleState(), 9000);
     CHECK_EQ(static_cast<int>(out.lockout), static_cast<int>(Lockout::Voltage));
   }
 
-  TEST("a bench test drives the pins and then expires");
+  TEST("a bench test drives the actuator and then expires");
   {
     Settings s = commissioned();
-    s.polarityConfirmed = false;  // this is what you use before commissioning
+    s.actuator.commissioned = false;  // used before anything is commissioned
     ValveController c(s);
     c.begin(0);
 
-    c.startTest(true, true, 5000, 1000);
+    c.startTest(true, 650, 5000, 1000);
     ControllerOutput out = c.update(1500, Mode::Auto, VehicleState(), 0);
     CHECK(out.testActive);
     CHECK(out.interceptRelay);
-    CHECK(out.solenoidDrive);
+    CHECK_EQ(out.commandDuty, 650);
 
     out = c.update(6500, Mode::Auto, VehicleState(), 0);
     CHECK(!out.testActive);
     CHECK(!out.interceptRelay);
-    CHECK(!out.solenoidDrive);
+    CHECK_EQ(out.commandDuty, 0);
   }
 
   TEST("stopping a test releases the outputs at once");
@@ -353,11 +357,11 @@ void run_valve_controller_tests() {
     Settings s = commissioned();
     ValveController c(s);
     c.begin(0);
-    c.startTest(true, true, 30000, 1000);
-    CHECK(c.update(1100, Mode::Auto, VehicleState(), 0).solenoidDrive);
+    c.startTest(true, 500, 30000, 1000);
+    CHECK_EQ(c.update(1100, Mode::Auto, VehicleState(), 0).commandDuty, 500);
     c.stopTest();
     const ControllerOutput out = c.update(1200, Mode::Auto, VehicleState(), 0);
-    CHECK(!out.solenoidDrive);
+    CHECK_EQ(out.commandDuty, 0);
     CHECK(!out.interceptRelay);
   }
 }

@@ -10,7 +10,10 @@ void run_settings_tests() {
   {
     Settings s;
     loadDefaults(s);
-    CHECK(!s.polarityConfirmed);
+    CHECK(!s.actuator.commissioned);
+    CHECK(!s.actuator.openLearned);
+    CHECK(!s.actuator.closedLearned);
+    CHECK_EQ(s.actuator.pwmHz, 0);
     CHECK(s.canFitted);
     CHECK_EQ(static_cast<int>(s.defaultMode), static_cast<int>(Mode::Auto));
     CHECK(s.safety.requireCanForOverride);
