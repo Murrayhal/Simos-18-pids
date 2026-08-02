@@ -1,0 +1,8 @@
+build/
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+*.o
+*.d
+compile_commands.json
