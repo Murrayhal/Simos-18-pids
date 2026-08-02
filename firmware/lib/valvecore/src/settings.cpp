@@ -9,6 +9,7 @@ void loadDefaults(Settings &s) {
   s.energizedClosesValve = true;
   s.polarityConfirmed = false;
 
+  s.canFitted = true;
   s.defaultMode = Mode::Auto;
 
   s.smart.openRpm = 3200;
@@ -48,6 +49,8 @@ void loadDefaults(Settings &s) {
 }
 
 bool signalsCommissioned(const Settings &s) {
+  // Nothing to commission when there is no bus to read.
+  if (!s.canFitted) return true;
   // RPM is the only signal the safety interlocks genuinely cannot do without.
   if (!s.signals[static_cast<uint8_t>(SignalId::Rpm)].enabled) return false;
   if (s.safety.minCoolantC > -273 &&
@@ -63,6 +66,21 @@ bool signalsCommissioned(const Settings &s) {
     return false;
   }
   return true;
+}
+
+bool modeAvailable(const Settings &s, Mode m) {
+  if (m == Mode::Smart && !s.canFitted) return false;
+  return m < Mode::Count;
+}
+
+Mode nextMode(const Settings &s, Mode current) {
+  for (uint8_t step = 1; step <= static_cast<uint8_t>(Mode::Count); ++step) {
+    const Mode candidate = static_cast<Mode>(
+        (static_cast<uint8_t>(current) + step) %
+        static_cast<uint8_t>(Mode::Count));
+    if (modeAvailable(s, candidate)) return candidate;
+  }
+  return Mode::Auto;
 }
 
 }  // namespace valve

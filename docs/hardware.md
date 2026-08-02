@@ -26,6 +26,10 @@ factory behaviour:
   the same as never having been fitted.
 - Pull the fuse and the car is stock.
 
+If you only want to open and close the flap on demand, you can do this with a
+switch and a relay and no microcontroller at all — see
+[no-canbus.md](no-canbus.md) before buying anything on this page.
+
 ## Bill of materials
 
 | Qty | Part | Notes |

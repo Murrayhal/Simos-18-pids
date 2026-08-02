@@ -31,6 +31,9 @@ the part that matters when something is wrong.
 
 ## The modes
 
+With `can` off there is no SMART: the button cycles AUTO → OPEN → QUIET, and
+the bus interlocks are skipped. See [no-canbus.md](no-canbus.md).
+
 **AUTO** de-energises the intercept relay entirely. The ECU is wired to the
 solenoid exactly as it was from the factory. This is the power-on default until
 you change it.
@@ -95,6 +98,7 @@ cycle before that loses them.
 | Key | Range | Default | What it does |
 | --- | --- | --- | --- |
 | `polarity` | `closes` \| `opens` | — | Declares which way the solenoid works, and commissions the controller |
+| `can` | on/off | on | A CAN tap is fitted. Off disables SMART and skips the bus interlocks — see [no-canbus.md](no-canbus.md) |
 | `confirm` | on/off | off | Manually un-commission it again |
 | `default` | mode | `auto` | Mode selected at power-on |
 | `smart.openrpm` | 0–9000 | 3200 | Open at or above this |

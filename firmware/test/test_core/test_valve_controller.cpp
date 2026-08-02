@@ -286,6 +286,49 @@ void run_valve_controller_tests() {
     CHECK(!out.solenoidDrive);
   }
 
+  TEST("with no CAN tap the bus interlocks are skipped, not failed");
+  {
+    Settings s = commissioned();
+    s.canFitted = false;
+    // These would all refuse an override on a bus-equipped car and would all
+    // be permanently unsatisfiable without one.
+    s.safety.requireCanForOverride = true;
+    s.safety.requireEngineRunning = true;
+    s.safety.minCoolantC = 60;
+    s.safety.startupQuietMs = 5000;
+    ValveController c(s);
+    c.begin(0);
+
+    VehicleState vs;  // nothing valid, because there is no bus
+    ControllerOutput out = c.update(100, Mode::Open, vs, 0);
+    CHECK_EQ(static_cast<int>(out.lockout), static_cast<int>(Lockout::None));
+    CHECK_EQ(static_cast<int>(out.target), static_cast<int>(Target::Open));
+    CHECK(out.interceptRelay);
+
+    out = c.update(200, Mode::Quiet, vs, 0);
+    CHECK_EQ(static_cast<int>(out.target), static_cast<int>(Target::Closed));
+
+    out = c.update(300, Mode::Auto, vs, 0);
+    CHECK_EQ(static_cast<int>(out.target), static_cast<int>(Target::Stock));
+  }
+
+  TEST("no CAN tap still does not bypass commissioning or the battery window");
+  {
+    Settings s = commissioned();
+    s.canFitted = false;
+    s.polarityConfirmed = false;
+    ValveController c(s);
+    c.begin(0);
+    ControllerOutput out = c.update(100, Mode::Open, VehicleState(), 0);
+    CHECK_EQ(static_cast<int>(out.lockout),
+             static_cast<int>(Lockout::NotCommissioned));
+
+    s.polarityConfirmed = true;
+    s.safety.batterySenseFitted = true;
+    out = c.update(200, Mode::Open, VehicleState(), 9000);
+    CHECK_EQ(static_cast<int>(out.lockout), static_cast<int>(Lockout::Voltage));
+  }
+
   TEST("a bench test drives the pins and then expires");
   {
     Settings s = commissioned();

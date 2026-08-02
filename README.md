@@ -38,6 +38,7 @@ docs/
   hardware.md      BOM, the intercept wiring, the MCP2515 3.3 V trap
   commissioning.md what to do on the car, in order
   can-signals.md   finding your car's frame IDs and bit offsets
+  no-canbus.md     direct control with no bus tap, including a no-firmware build
   operation.md     modes, LED codes, console reference, drone tuning
 ```
 
@@ -58,6 +59,10 @@ pio device monitor -d firmware         # console at 115200
    Nothing will move until you do — that is the intended behaviour, not a fault.
 3. Find your CAN signals with [docs/can-signals.md](docs/can-signals.md).
 4. Day-to-day use and tuning is in [docs/operation.md](docs/operation.md).
+
+**Just want a switch that opens and closes it?** You may not need any of this —
+see [docs/no-canbus.md](docs/no-canbus.md), which covers direct control with one
+switch and a relay and no microcontroller at all.
 
 Scan for fault codes after the first drive, and keep a copy of `show` output —
 it is the only record of your commissioning.

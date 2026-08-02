@@ -256,12 +256,14 @@ void setup() {
 
   g_console.setWriter(consoleWrite, nullptr);
 
-  SPI.begin();
-  g_canUp = canBegin();
+  if (g_settings.canFitted) {
+    SPI.begin();
+    g_canUp = canBegin();
+  }
 
   g_controller.begin(millis());
   g_console.greet();
-  if (!g_canUp) {
+  if (g_settings.canFitted && !g_canUp) {
     g_console.print("!! MCP2515 did not initialise, check wiring/crystal\r\n");
   }
 
@@ -271,7 +273,7 @@ void setup() {
 void loop() {
   const uint32_t now = millis();
 
-  if (!g_canUp && (now - g_lastCanRetryMs) > 2000) {
+  if (g_settings.canFitted && !g_canUp && (now - g_lastCanRetryMs) > 2000) {
     g_lastCanRetryMs = now;
     g_canUp = canBegin();
     if (g_canUp) g_console.print("CAN up\r\n");
@@ -287,8 +289,7 @@ void loop() {
   const bool pressed = digitalRead(PIN_BUTTON) == LOW;
   switch (g_button.update(now, pressed)) {
     case ButtonEvent::Short:
-      g_mode = static_cast<Mode>((static_cast<uint8_t>(g_mode) + 1) %
-                                 static_cast<uint8_t>(Mode::Count));
+      g_mode = nextMode(g_settings, g_mode);
       g_console.printf("mode %s\r\n", modeName(g_mode));
       break;
     case ButtonEvent::Long:

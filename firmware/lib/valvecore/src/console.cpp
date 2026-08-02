@@ -127,7 +127,9 @@ void Console::greet() {
         "!! solenoid polarity not commissioned - all overrides are disabled\r\n"
         "!! see docs/commissioning.md, then: set polarity closes|opens\r\n");
   }
-  if (!signalsCommissioned(settings_)) {
+  if (!settings_.canFitted) {
+    print("no CAN tap: SMART unavailable, bus interlocks skipped\r\n");
+  } else if (!signalsCommissioned(settings_)) {
     print(
         "!! CAN signals not fully configured - run `hunt` on the car\r\n"
         "!! see docs/can-signals.md\r\n");
@@ -256,6 +258,10 @@ void Console::cmdMode(int argc, char **argv) {
     print("usage: mode auto|smart|open|quiet\r\n");
     return;
   }
+  if (!modeAvailable(settings_, m)) {
+    print("SMART needs bus data. `set can on` and configure signals first.\r\n");
+    return;
+  }
   mode_ = m;
   modeChanged_ = true;
   printf("mode %s\r\n", modeName(mode_));
@@ -265,6 +271,7 @@ void Console::cmdShow() {
   const Settings &s = settings_;
   printf("set polarity %s\r\n", s.energizedClosesValve ? "closes" : "opens");
   printf("set confirm %s\r\n", s.polarityConfirmed ? "on" : "off");
+  printf("set can %s\r\n", s.canFitted ? "on" : "off");
   printf("set default %s\r\n", modeName(s.defaultMode));
   printf("set smart.openrpm %u\r\n", static_cast<unsigned>(s.smart.openRpm));
   printf("set smart.closerpm %u\r\n", static_cast<unsigned>(s.smart.closeRpm));
@@ -344,9 +351,25 @@ void Console::cmdSet(int argc, char **argv) {
     printf("polarity %s\r\n", b ? "confirmed" : "unconfirmed");
     return;
   }
+  if (!strcmp(k, "can")) {
+    if (!parseBool(v, b)) { print("expected on|off\r\n"); return; }
+    s.canFitted = b;
+    if (!b && !modeAvailable(s, mode_)) mode_ = Mode::Auto;
+    if (!b && s.defaultMode == Mode::Smart) s.defaultMode = Mode::Auto;
+    printf("CAN tap %s\r\n", b ? "fitted" : "not fitted");
+    if (!b) {
+      print("SMART disabled; bus interlocks skipped. Use a switched 12V feed."
+            "\r\n");
+    }
+    return;
+  }
   if (!strcmp(k, "default")) {
     Mode m;
     if (!parseMode(v, m)) { print("expected auto|smart|open|quiet\r\n"); return; }
+    if (!modeAvailable(s, m)) {
+      print("SMART needs bus data. `set can on` first.\r\n");
+      return;
+    }
     s.defaultMode = m;
     printf("default mode %s\r\n", modeName(m));
     return;

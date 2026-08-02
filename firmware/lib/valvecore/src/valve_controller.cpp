@@ -97,6 +97,12 @@ Lockout ValveController::evaluateLockout(const VehicleState &state,
     return Lockout::Voltage;
   }
 
+  // With no bus tap there is nothing to interlock against, so the remaining
+  // checks would all fail permanently rather than protect anything. What keeps
+  // a no-CAN install from sitting energised on a parked car is the ignition
+  // switched supply, not software.
+  if (!settings_.canFitted) return Lockout::None;
+
   if (sf.requireCanForOverride && !state.anyValid) return Lockout::CanLost;
 
   const bool engineRunning = state.rpmValid && state.rpm >= sf.engineRunningRpm;

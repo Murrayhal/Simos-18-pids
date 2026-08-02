@@ -7,7 +7,7 @@ namespace valve {
 
 // Bumped whenever the layout of Settings changes so stored blobs from an older
 // firmware are discarded rather than misread.
-static const uint16_t kSettingsVersion = 3;
+static const uint16_t kSettingsVersion = 4;
 
 struct SmartSettings {
   // Hysteresis pair: open above openRpm, close again below closeRpm.
@@ -61,6 +61,13 @@ struct Settings {
   // controller refuses to drive the solenoid at all.
   bool polarityConfirmed;
 
+  // False for an install with no CAN tap at all: button and LED only, driving
+  // the flap open or shut on demand. SMART mode disappears (it has nothing to
+  // decide from) and every interlock that reads the bus is skipped, which puts
+  // the whole burden of not draining the battery on taking the 12 V feed from
+  // a switched source. See docs/no-canbus.md.
+  bool canFitted;
+
   // Mode selected at power on.
   Mode defaultMode;
 
@@ -75,6 +82,14 @@ struct Settings {
 void loadDefaults(Settings &s);
 
 // True when every signal the current configuration depends on is enabled.
+// Vacuously true on an install with no CAN tap.
 bool signalsCommissioned(const Settings &s);
+
+// True when this mode is reachable given the configuration. SMART needs the
+// bus; the rest do not.
+bool modeAvailable(const Settings &s, Mode m);
+
+// Next mode in the button cycle, skipping any that are unavailable.
+Mode nextMode(const Settings &s, Mode current);
 
 }  // namespace valve

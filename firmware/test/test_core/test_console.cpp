@@ -208,6 +208,33 @@ void run_console_tests() {
     CHECK(!f.console.sniffActive());
   }
 
+  TEST("turning the bus off disables SMART and says so");
+  {
+    Fixture f;
+    f.run("mode smart");
+    CHECK_EQ(static_cast<int>(f.mode), static_cast<int>(Mode::Smart));
+    CHECK(contains(f.run("set can off"), "not fitted"));
+    CHECK(!f.settings.canFitted);
+    // The live mode must not be left parked somewhere unreachable.
+    CHECK_EQ(static_cast<int>(f.mode), static_cast<int>(Mode::Auto));
+    CHECK(contains(f.run("mode smart"), "needs bus data"));
+    CHECK_EQ(static_cast<int>(f.mode), static_cast<int>(Mode::Auto));
+    CHECK(contains(f.run("set default smart"), "needs bus data"));
+    CHECK(contains(f.run("show"), "set can off"));
+  }
+
+  TEST("a no-bus install is not nagged about CAN commissioning");
+  {
+    Fixture f;
+    f.run("set can off");
+    g_out.clear();
+    f.console.greet();
+    CHECK(contains(g_out, "no CAN tap"));
+    CHECK(!contains(g_out, "CAN signals not fully configured"));
+    // It is still told about the polarity, which matters either way.
+    CHECK(contains(g_out, "polarity not commissioned"));
+  }
+
   TEST("greeting warns about an uncommissioned install");
   {
     Fixture f;
