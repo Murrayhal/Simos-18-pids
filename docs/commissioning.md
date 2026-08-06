@@ -7,6 +7,9 @@ and every override is refused until you have worked through this page.
 
 Connect a laptop with `pio device monitor` (115200 baud) for all of it.
 
+If you have not yet identified which of the three actuator wires is which, do
+[wiring-identification.md](wiring-identification.md) first.
+
 ## Step 1 — learn the actuator's commands
 
 **This is the step everything else depends on.** You are capturing the two PWM

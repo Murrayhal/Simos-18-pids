@@ -39,6 +39,7 @@ firmware/
 docs/
   hardware.md      BOM, the intercept wiring, the MCP2515 3.3 V trap
   commissioning.md what to do on the car, in order
+  wiring-identification.md  finding the three actuator wires with a multimeter
   can-signals.md   finding your car's frame IDs and bit offsets
   no-canbus.md     direct control with no bus tap
   operation.md     modes, LED codes, console reference, drone tuning
@@ -55,12 +56,15 @@ pio device monitor -d firmware         # console at 115200
 
 ## Getting started
 
-1. Build the hardware per [docs/hardware.md](docs/hardware.md). The MCP2515
+1. Identify your actuator wiring with
+   [docs/wiring-identification.md](docs/wiring-identification.md). Do this
+   first — it also tells you whether this design applies to your car at all.
+2. Build the hardware per [docs/hardware.md](docs/hardware.md). The MCP2515
    3.3 V section is the part people get wrong.
-2. Flash it, then work through [docs/commissioning.md](docs/commissioning.md).
+3. Flash it, then work through [docs/commissioning.md](docs/commissioning.md).
    Nothing will move until you do — that is the intended behaviour, not a fault.
-3. Find your CAN signals with [docs/can-signals.md](docs/can-signals.md).
-4. Day-to-day use and tuning is in [docs/operation.md](docs/operation.md).
+4. Find your CAN signals with [docs/can-signals.md](docs/can-signals.md).
+5. Day-to-day use and tuning is in [docs/operation.md](docs/operation.md).
 
 **Just want to open and close them on demand?** You can skip the whole CAN side
 — see [docs/no-canbus.md](docs/no-canbus.md). You cannot skip the

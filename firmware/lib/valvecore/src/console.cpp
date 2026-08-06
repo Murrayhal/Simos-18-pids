@@ -600,6 +600,15 @@ void Console::cmdProbe() {
          static_cast<unsigned>(meter_.frequencyHz()), meter_.duty() / 10.0,
          static_cast<unsigned long>(meter_.edgeCount()),
          meter_.stable() ? ", steady" : ", CHANGING - hold still and re-read");
+
+  // A line with plenty of edges that never settles is a strong hint that we are
+  // not looking at a fixed-frequency position command at all. Saying so beats
+  // letting somebody spend an evening learning duty values off a data bus.
+  if (meter_.unsettled() && meter_.edgeCount() > 2000) {
+    print("note: many edges but no steady period. If this does not settle in "
+          "any drive mode, the line may be carrying data (LIN) rather than a "
+          "PWM command - see docs/wiring-identification.md step 4.\r\n");
+  }
 }
 
 void Console::cmdLearn(int argc, char **argv) {

@@ -155,6 +155,37 @@ void run_console_tests() {
     CHECK(contains(out, "steady"));
   }
 
+  TEST("probe flags a line that never settles as possibly not PWM");
+  {
+    Fixture f;
+    // Roughly what LIN looks like: bursts of edges at multiples of the 52 us
+    // bit time, separated by milliseconds of idle. Consecutive periods never
+    // agree, so nothing ever settles.
+    uint32_t t = 1000000;
+    for (int frame = 0; frame < 120; ++frame) {
+      for (int bit = 0; bit < 12; ++bit) {
+        const uint32_t low = 52u * (1 + ((frame + bit) % 4));
+        const uint32_t high = 52u * (1 + ((frame * 3 + bit) % 5));
+        f.meter.onEdge(t, true);
+        f.meter.onEdge(t + high, false);
+        t += high + low;
+      }
+      t += 5000;  // inter-frame idle
+    }
+    const std::string out = f.run("probe");
+    CHECK(contains(out, "CHANGING"));
+    CHECK(contains(out, "LIN"));
+  }
+
+  TEST("a steady line is not flagged as a data bus");
+  {
+    Fixture f;
+    for (int i = 0; i < 60; ++i) f.feedPwm(200, 40, 1000000 + i * 100000);
+    const std::string out = f.run("probe");
+    CHECK(contains(out, "steady"));
+    CHECK(!contains(out, "LIN"));
+  }
+
   TEST("confirm cannot be forced on before the positions are known");
   {
     Fixture f;

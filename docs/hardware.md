@@ -48,6 +48,9 @@ Back-probe the actuator connector with the ignition on.
   intercept idea still works but you would also have to synthesise the feedback,
   which this firmware does not do.
 
+Full procedure with a multimeter, including how to tell PWM apart from a data
+bus, is in [wiring-identification.md](wiring-identification.md).
+
 Confirm the third wire really is PWM before going further. Once the controller
 is built you can do this with `probe`; with a scope, look for a fixed-frequency
 square wave whose mark-space ratio changes with drive select.
